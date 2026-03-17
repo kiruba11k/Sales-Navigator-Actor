@@ -1,4 +1,3 @@
-
 import { Actor } from 'apify';
 import { chromium } from 'playwright';
 import { SessionPool } from 'crawlee';
@@ -8,127 +7,222 @@ await Actor.init();
 const input = await Actor.getInput() || {};
 const {
     salesNavigatorSearchUrl,
-    maxResults = 500, // Start small for testing
+    maxResults = 500,
     cookieString,
+    maxProxyAttempts = 2,
+    navigationTimeoutSecs = 35,
+    proxyGroups,
+    proxyCountry,
 } = input;
 
-const proxyConfiguration = await Actor.createProxyConfiguration({ useApifyProxy: true });
-const sessionPool = await SessionPool.open({ maxPoolSize: 1 });
+if (!salesNavigatorSearchUrl) {
+    throw new Error('Input "salesNavigatorSearchUrl" is required.');
+}
+
+const proxyConfiguration = await Actor.createProxyConfiguration({
+    useApifyProxy: true,
+    groups: Array.isArray(proxyGroups) ? proxyGroups : undefined,
+    countryCode: typeof proxyCountry === 'string' ? proxyCountry : undefined,
+});
+
+const sessionPool = await SessionPool.open({ maxPoolSize: Math.max(3, maxProxyAttempts) });
 const browser = await chromium.launch({ headless: true });
 
-// --- STEP 1: Link Extractor (With Safety Checks) ---
-async function getCompanyLinks(page, max) {
-    let links = new Set();
-    
-    // WAIT for the search results to actually appear on screen
+const BLOCK_HINT = 'LinkedIn is blocking this session/proxy or the cookie is no longer valid.';
+const navigationTimeoutMs = Math.max(10, Number(navigationTimeoutSecs) || 35) * 1000;
+
+const isBlockedUrl = (url = '') => /checkpoint|challenge|captcha|login|authwall/i.test(url);
+
+
+async function gotoWithFastFail(page, url, timeoutMs) {
     try {
-        await page.waitForSelector('.artdeco-entity-lockup, [data-test-search-result]', { timeout: 30000 });
-    } catch (e) {
-        console.error("Search results never loaded. LinkedIn might be blocking or cookie is invalid.");
+        await page.goto(url, { waitUntil: 'commit', timeout: timeoutMs });
+    } catch (error) {
+        const msg = (error && error.message) || '';
+        if (msg.includes('Timeout')) {
+            throw new Error(`Navigation timed out after ${Math.round(timeoutMs / 1000)}s. Proxy is likely too slow/blocked.`);
+        }
+        throw error;
+    }
+}
+
+async function detectSearchPageState(page) {
+    const result = await page.waitForFunction(() => {
+        const url = window.location.href;
+        const hasResultCards = !!document.querySelector('a[data-anonymize="company-name"], .artdeco-entity-lockup, [data-test-search-result]');
+        const pageText = (document.body?.innerText || '').toLowerCase();
+        const blockedText = ['verify you are human', 'security verification', 'captcha', 'unusual activity'].some((t) => pageText.includes(t));
+        const emptyText = ['no results found', 'we could not find any results'].some((t) => pageText.includes(t));
+
+        return {
+            url,
+            hasResultCards,
+            blockedText,
+            emptyText,
+        };
+    }, { timeout: 45000 });
+
+    return result.jsonValue();
+}
+
+async function getCompanyLinks(page, max) {
+    const links = new Set();
+    let staleRounds = 0;
+
+    const state = await detectSearchPageState(page);
+    if (isBlockedUrl(state.url) || state.blockedText) {
+        throw new Error(`Search results did not load because of a LinkedIn checkpoint/authwall. ${BLOCK_HINT}`);
+    }
+    if (!state.hasResultCards && state.emptyText) {
+        console.log('Search page loaded but LinkedIn returned an empty result set.');
         return [];
     }
+    if (!state.hasResultCards) {
+        throw new Error(`Search results never appeared. ${BLOCK_HINT}`);
+    }
 
-    while (links.size < max) {
-        const newLinks = await page.$$eval('a[data-anonymize="company-name"]', 
-            anchors => anchors.map(a => a.href));
-        
-        newLinks.forEach(link => {
-            if (links.size < max && link.includes('sales/company')) {
-                links.add(link);
-            }
-        });
-        
+    while (links.size < max && staleRounds < 4) {
+        const before = links.size;
+        const newLinks = await page.$$eval('a[data-anonymize="company-name"]', (anchors) => anchors.map((a) => a.href));
+
+        for (const link of newLinks) {
+            if (links.size >= max) break;
+            if (link.includes('/sales/company/')) links.add(link);
+        }
+
         console.log(`Found ${links.size} company links so far...`);
+
+        if (links.size === before) {
+            staleRounds += 1;
+        } else {
+            staleRounds = 0;
+        }
+
         if (links.size >= max) break;
 
-        // SAFE SCROLL: Check if document.body exists before reading scrollHeight
-        const scrollSuccess = await page.evaluate(() => {
-            if (!document.body) return false;
-            window.scrollBy(0, 800);
-            return true;
+        await page.evaluate(() => {
+            window.scrollBy(0, Math.max(800, window.innerHeight));
         });
-
-        if (!scrollSuccess) break;
-        await page.waitForTimeout(3000);
-        
-        // If we've scrolled a lot and found nothing new, stop
-        if (newLinks.length === 0) break;
+        await page.waitForTimeout(2500);
     }
+
     return Array.from(links);
 }
 
-// --- STEP 2: Deep Detail Extractor ---
 async function extractCompanyDetails(page, url) {
     console.log(`Scraping details: ${url}`);
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(5000); // Give it time to load sub-elements
+    await gotoWithFastFail(page, url, navigationTimeoutMs);
+    await page.waitForTimeout(4000);
 
-    return await page.evaluate(() => {
+    if (isBlockedUrl(page.url())) {
+        throw new Error(`LinkedIn redirected to ${page.url()} while opening company details. ${BLOCK_HINT}`);
+    }
+
+    return page.evaluate(() => {
         const getVal = (label) => {
             const el = Array.from(document.querySelectorAll('dt'))
-                .find(dt => dt.innerText.includes(label));
+                .find((dt) => dt.innerText.includes(label));
             return el ? el.nextElementSibling?.innerText.trim() : null;
         };
 
         return {
-            companyName: document.querySelector('.artdeco-entity-lockup__title')?.innerText.trim() || "N/A",
+            companyName: document.querySelector('.artdeco-entity-lockup__title')?.innerText.trim() || 'N/A',
             website: document.querySelector('a[data-anonymize="company-website"]')?.href || getVal('Website'),
             industry: getVal('Industry'),
             companySize: getVal('Company size'),
             location: getVal('Headquarters'),
             specialties: getVal('Specialties'),
             description: document.querySelector('.artdeco-entity-lockup__summary')?.innerText.trim(),
-            linkedinUrl: window.location.href
+            linkedinUrl: window.location.href,
         };
     });
 }
 
-try {
-    const session = await sessionPool.getSession();
-    const proxyInfo = await proxyConfiguration.newProxyInfo(session.id);
-    const context = await browser.newContext({
-        proxy: { server: proxyInfo.url },
-        viewport: { width: 1280, height: 900 },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    });
+async function buildCookieObjects(rawCookieString) {
+    if (!rawCookieString) return [];
 
-    if (cookieString) {
-        const cookies = cookieString.split(';').map(c => {
+    return rawCookieString
+        .split(';')
+        .map((c) => {
             const [name, ...val] = c.trim().split('=');
             if (!name || val.length === 0) return null;
-            return { name: name.trim(), value: val.join('=').trim(), domain: '.linkedin.com', path: '/' };
-        }).filter(Boolean);
-        await context.addCookies(cookies);
+            return {
+                name: name.trim(),
+                value: val.join('=').trim(),
+                domain: '.linkedin.com',
+                path: '/',
+                secure: true,
+            };
+        })
+        .filter(Boolean);
+}
+
+try {
+    const cookies = await buildCookieObjects(cookieString);
+    let companyUrls = [];
+    let page;
+    let context;
+
+    for (let attempt = 1; attempt <= maxProxyAttempts; attempt += 1) {
+        const session = await sessionPool.getSession();
+        const proxyInfo = await proxyConfiguration.newProxyInfo(session.id);
+
+        console.log(`Loading search results (attempt ${attempt}/${maxProxyAttempts}) with session ${session.id} via proxy ${proxyInfo.hostname || proxyInfo.url} ...`);
+
+        context = await browser.newContext({
+            proxy: { server: proxyInfo.url },
+            viewport: { width: 1280, height: 900 },
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        });
+
+        if (cookies.length > 0) {
+            await context.addCookies(cookies);
+        }
+
+        page = await context.newPage();
+
+        try {
+            await gotoWithFastFail(page, 'https://www.linkedin.com', Math.min(15000, navigationTimeoutMs));
+            await gotoWithFastFail(page, salesNavigatorSearchUrl, navigationTimeoutMs);
+            await page.waitForTimeout(3500);
+
+            if (isBlockedUrl(page.url())) {
+                throw new Error(`Blocked immediately on load at ${page.url()}. ${BLOCK_HINT}`);
+            }
+
+            companyUrls = await getCompanyLinks(page, maxResults);
+            if (companyUrls.length === 0) {
+                console.log('No companies found. Make sure this is a valid Sales Navigator company search URL and the account has access.');
+            }
+            break;
+        } catch (error) {
+            session.retire();
+            console.error(`Attempt ${attempt} failed: ${error.message}`);
+            await context.close();
+            page = undefined;
+            context = undefined;
+
+            if (attempt === maxProxyAttempts) throw error;
+        }
     }
 
-    const page = await context.newPage();
-    
-    console.log("Loading search results...");
-    await page.goto(salesNavigatorSearchUrl, { waitUntil: 'networkidle', timeout: 90000 });
-    
-    // Check for "Verify you are human" or Login Redirect
-    if (page.url().includes('checkpoint') || page.url().includes('login')) {
-        throw new Error("BLOCKED: LinkedIn is showing a security check. Free proxies are likely detected.");
-    }
-
-    const companyUrls = await getCompanyLinks(page, maxResults);
-
-    if (companyUrls.length === 0) {
-        console.log("No companies found. Check if the URL is a valid Sales Navigator Company Search.");
+    if (!page || !context) {
+        throw new Error(`Could not open a usable LinkedIn session after ${maxProxyAttempts} attempts. Try RESIDENTIAL proxies, a fresh li_at cookie, or a longer actor run timeout.`);
     }
 
     for (const url of companyUrls) {
         try {
             const details = await extractCompanyDetails(page, url);
             await Actor.pushData(details);
-            await page.waitForTimeout(4000 + Math.random() * 3000); // Random human-like pause
+            await page.waitForTimeout(4000 + Math.random() * 3000);
         } catch (e) {
-            console.error(`Failed to scrape ${url}:`, e.message);
+            console.error(`Failed to scrape ${url}: ${e.message}`);
         }
     }
 
+    await context.close();
 } catch (err) {
-    console.error("Fatal Error:", err.message);
+    console.error('Fatal Error:', err.message);
 } finally {
     await browser.close();
     await Actor.exit();
