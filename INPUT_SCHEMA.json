@@ -1,6 +1,32 @@
 {
-  "salesNavigatorSearchUrl": "string",
-  "maxResults": 1000,
-  "cookieString": "string",
-  "maxConcurrency": 3
+  "title": "LinkedIn Sales Navigator Company Scraper",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "salesNavigatorSearchUrl": {
+      "title": "Sales Navigator Search URL",
+      "type": "string",
+      "description": "Paste your LinkedIn Sales Navigator company search URL",
+      "editor": "textfield"
+    },
+    "maxResults": {
+      "title": "Max Results",
+      "type": "integer",
+      "description": "Maximum number of companies to scrape",
+      "default": 600
+    },
+    "cookieString": {
+      "title": "LinkedIn Cookie (li_at)",
+      "type": "string",
+      "description": "Paste your LinkedIn li_at cookie for authentication",
+      "editor": "textfield"
+    },
+    "maxConcurrency": {
+      "title": "Max Concurrency",
+      "type": "integer",
+      "description": "Number of parallel sessions",
+      "default": 3
+    }
+  },
+  "required": ["salesNavigatorSearchUrl"]
 }
