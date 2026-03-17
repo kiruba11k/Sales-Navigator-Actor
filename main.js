@@ -148,7 +148,7 @@ try {
     let context;
 
     for (let attempt = 1; attempt <= maxProxyAttempts; attempt += 1) {
-        const proxySessionId = `linkedin_search_${Date.now()}_${attempt}_${Math.random().toString(36).slice(2, 8)}`;
+        const proxySessionId = `linkedin-search-${Date.now()}-${attempt}-${Math.random().toString(36).slice(2, 8)}`;
         const proxyInfo = await proxyConfiguration.newProxyInfo(proxySessionId);
 
         console.log(`Loading search results (attempt ${attempt}/${maxProxyAttempts}) with proxy ${proxyInfo?.hostname || proxyInfo?.url || 'disabled'} (session ${proxySessionId}) ...`);
