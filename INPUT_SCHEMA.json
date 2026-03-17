@@ -44,6 +44,12 @@
       "type": "boolean",
       "description": "Enable Apify Proxy. Disable this if your account/IP can access LinkedIn directly or when testing without proxies.",
       "default": true
+    },
+    "fallbackToDirectOnProxyTimeout": {
+      "title": "Fallback to Direct Connection on Proxy Timeout",
+      "type": "boolean",
+      "description": "When enabled, the actor retries once without proxy if all proxy attempts time out while opening LinkedIn.",
+      "default": true
     }
   },
   "required": [
