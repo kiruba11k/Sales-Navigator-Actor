@@ -12,6 +12,7 @@ const {
     proxyGroups,
     proxyCountry,
     useApifyProxy = true,
+    fallbackToDirectOnProxyTimeout = true,
 } = input;
 
 if (!salesNavigatorSearchUrl) {
@@ -146,51 +147,83 @@ try {
     let companyUrls = [];
     let page;
     let context;
+    let sawProxyTimeout = false;
 
-    for (let attempt = 1; attempt <= maxProxyAttempts; attempt += 1) {
-        const proxySessionId = `linkedin_search_${Date.now()}_${attempt}_${Math.random().toString(36).slice(2, 8)}`;
-        const proxyInfo = await proxyConfiguration.newProxyInfo(proxySessionId);
+    const loadSearchResults = async ({ attempts, useProxy, stageLabel }) => {
+        for (let attempt = 1; attempt <= attempts; attempt += 1) {
+            const proxySessionId = `linkedin_search_${Date.now()}_${attempt}_${Math.random().toString(36).slice(2, 8)}`;
+            const proxyInfo = useProxy ? await proxyConfiguration.newProxyInfo(proxySessionId) : null;
 
-        console.log(`Loading search results (attempt ${attempt}/${maxProxyAttempts}) with proxy ${proxyInfo?.hostname || proxyInfo?.url || 'disabled'} (session ${proxySessionId}) ...`);
+            const proxyLabel = useProxy
+                ? proxyInfo?.hostname || proxyInfo?.url || 'disabled'
+                : 'direct connection (no proxy)';
 
-        context = await browser.newContext({
-            proxy: proxyInfo?.url ? { server: proxyInfo.url } : undefined,
-            viewport: { width: 1280, height: 900 },
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            console.log(`Loading search results ${stageLabel}(attempt ${attempt}/${attempts}) with ${proxyLabel} (session ${proxySessionId}) ...`);
+
+            context = await browser.newContext({
+                proxy: proxyInfo?.url ? { server: proxyInfo.url } : undefined,
+                viewport: { width: 1280, height: 900 },
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            });
+
+            if (cookies.length > 0) {
+                await context.addCookies(cookies);
+            }
+
+            page = await context.newPage();
+
+            try {
+                await page.goto(salesNavigatorSearchUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+                await page.waitForTimeout(5000);
+
+                if (isBlockedUrl(page.url())) {
+                    throw new Error(`Blocked immediately on load at ${page.url()}. ${BLOCK_HINT}`);
+                }
+
+                companyUrls = await getCompanyLinks(page, maxResults);
+                if (companyUrls.length === 0) {
+                    console.log('No companies found. Make sure this is a valid Sales Navigator company search URL and the account has access.');
+                }
+                return;
+            } catch (error) {
+                const isTimeout = /timeout/i.test(error?.message || '');
+                if (useProxy && isTimeout) sawProxyTimeout = true;
+
+                const timeoutHint = isTimeout
+                    ? ' This usually means the proxy cannot reach LinkedIn. Free Apify datacenter proxies are often blocked; try RESIDENTIAL proxies, disable proxy usage, or use a different country.'
+                    : '';
+
+                console.error(`Attempt ${attempt} failed: ${error.message}${timeoutHint}`);
+                await context.close();
+                page = undefined;
+                context = undefined;
+
+                if (attempt === attempts) throw error;
+            }
+        }
+    };
+
+    const shouldUseProxy = useApifyProxy !== false;
+
+    try {
+        await loadSearchResults({
+            attempts: maxProxyAttempts,
+            useProxy: shouldUseProxy,
+            stageLabel: shouldUseProxy ? 'via proxy ' : '',
         });
+    } catch (error) {
+        const canFallbackToDirect = shouldUseProxy && fallbackToDirectOnProxyTimeout !== false && sawProxyTimeout;
 
-        if (cookies.length > 0) {
-            await context.addCookies(cookies);
+        if (!canFallbackToDirect) {
+            throw error;
         }
 
-        page = await context.newPage();
-
-        try {
-            await page.goto(salesNavigatorSearchUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
-            await page.waitForTimeout(5000);
-
-            if (isBlockedUrl(page.url())) {
-                throw new Error(`Blocked immediately on load at ${page.url()}. ${BLOCK_HINT}`);
-            }
-
-            companyUrls = await getCompanyLinks(page, maxResults);
-            if (companyUrls.length === 0) {
-                console.log('No companies found. Make sure this is a valid Sales Navigator company search URL and the account has access.');
-            }
-            break;
-        } catch (error) {
-            const isTimeout = /timeout/i.test(error?.message || '');
-            const timeoutHint = isTimeout
-                ? ' This usually means the proxy cannot reach LinkedIn. Free Apify datacenter proxies are often blocked; try RESIDENTIAL proxies, disable proxy usage, or use a different country.'
-                : '';
-
-            console.error(`Attempt ${attempt} failed: ${error.message}${timeoutHint}`);
-            await context.close();
-            page = undefined;
-            context = undefined;
-
-            if (attempt === maxProxyAttempts) throw error;
-        }
+        console.log('Proxy attempts timed out. Retrying once without proxy as a fallback.');
+        await loadSearchResults({
+            attempts: 1,
+            useProxy: false,
+            stageLabel: '(fallback) ',
+        });
     }
 
     if (!page || !context) {
