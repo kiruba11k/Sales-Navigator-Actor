@@ -13,19 +13,31 @@
       "title": "Max Results",
       "type": "integer",
       "description": "Maximum number of companies to scrape",
-      "default": 600
+      "default": 500
     },
     "cookieString": {
-      "title": "LinkedIn Cookie (li_at)",
+      "title": "LinkedIn Cookie String (must include li_at)",
       "type": "string",
-      "description": "Paste your LinkedIn li_at cookie for authentication",
+      "description": "Paste browser cookies from linkedin.com (include li_at). Without valid cookies LinkedIn usually redirects to login/checkpoint.",
       "editor": "textfield"
     },
-    "maxConcurrency": {
-      "title": "Max Concurrency",
+    "maxProxyAttempts": {
+      "title": "Max Proxy Attempts",
       "type": "integer",
-      "description": "Number of parallel sessions",
+      "description": "How many fresh Apify proxy sessions to try when LinkedIn blocks one.",
       "default": 3
+    },
+    "proxyGroups": {
+      "title": "Proxy Groups",
+      "type": "array",
+      "description": "Optional Apify proxy groups, e.g. [\"RESIDENTIAL\"]. Free/datacenter proxies are frequently blocked by LinkedIn.",
+      "editor": "stringList"
+    },
+    "proxyCountry": {
+      "title": "Proxy Country",
+      "type": "string",
+      "description": "Optional country code for proxy IP location, e.g. US.",
+      "editor": "textfield"
     }
   },
   "required": ["salesNavigatorSearchUrl"]
