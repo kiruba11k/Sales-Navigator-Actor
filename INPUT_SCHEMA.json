@@ -38,6 +38,12 @@
       "type": "string",
       "description": "Optional country code for proxy IP location, e.g. US.",
       "editor": "textfield"
+    },
+    "useApifyProxy": {
+      "title": "Use Apify Proxy",
+      "type": "boolean",
+      "description": "Enable Apify Proxy. Disable this if your account/IP can access LinkedIn directly or when testing without proxies.",
+      "default": true
     }
   },
   "required": [
