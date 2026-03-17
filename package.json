@@ -1,0 +1,8 @@
+{
+  "name": "linkedin-salesnav-company-scraper",
+  "version": "2.0.0",
+  "dependencies": {
+    "apify": "^3.0.0",
+    "playwright": "^1.40.0"
+  }
+}
