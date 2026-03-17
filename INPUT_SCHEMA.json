@@ -24,8 +24,8 @@
     "maxProxyAttempts": {
       "title": "Max Proxy Attempts",
       "type": "integer",
-      "description": "How many fresh Apify proxy sessions to try when LinkedIn blocks or times out one session.",
-      "default": 2
+      "description": "How many fresh Apify proxy sessions to try when LinkedIn blocks one.",
+      "default": 3
     },
     "proxyGroups": {
       "title": "Proxy Groups",
@@ -38,12 +38,6 @@
       "type": "string",
       "description": "Optional country code for proxy IP location, e.g. US.",
       "editor": "textfield"
-    },
-    "navigationTimeoutSecs": {
-      "title": "Navigation Timeout (seconds)",
-      "type": "integer",
-      "description": "Per-navigation timeout. Lower values fail fast on bad proxies to avoid actor run timeout.",
-      "default": 35
     }
   },
   "required": [

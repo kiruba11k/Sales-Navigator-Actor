@@ -9,8 +9,7 @@ const {
     salesNavigatorSearchUrl,
     maxResults = 500,
     cookieString,
-    maxProxyAttempts = 2,
-    navigationTimeoutSecs = 35,
+    maxProxyAttempts = 3,
     proxyGroups,
     proxyCountry,
 } = input;
@@ -29,22 +28,8 @@ const sessionPool = await SessionPool.open({ maxPoolSize: Math.max(3, maxProxyAt
 const browser = await chromium.launch({ headless: true });
 
 const BLOCK_HINT = 'LinkedIn is blocking this session/proxy or the cookie is no longer valid.';
-const navigationTimeoutMs = Math.max(10, Number(navigationTimeoutSecs) || 35) * 1000;
 
 const isBlockedUrl = (url = '') => /checkpoint|challenge|captcha|login|authwall/i.test(url);
-
-
-async function gotoWithFastFail(page, url, timeoutMs) {
-    try {
-        await page.goto(url, { waitUntil: 'commit', timeout: timeoutMs });
-    } catch (error) {
-        const msg = (error && error.message) || '';
-        if (msg.includes('Timeout')) {
-            throw new Error(`Navigation timed out after ${Math.round(timeoutMs / 1000)}s. Proxy is likely too slow/blocked.`);
-        }
-        throw error;
-    }
-}
 
 async function detectSearchPageState(page) {
     const result = await page.waitForFunction(() => {
@@ -111,7 +96,7 @@ async function getCompanyLinks(page, max) {
 
 async function extractCompanyDetails(page, url) {
     console.log(`Scraping details: ${url}`);
-    await gotoWithFastFail(page, url, navigationTimeoutMs);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(4000);
 
     if (isBlockedUrl(page.url())) {
@@ -167,7 +152,7 @@ try {
         const session = await sessionPool.getSession();
         const proxyInfo = await proxyConfiguration.newProxyInfo(session.id);
 
-        console.log(`Loading search results (attempt ${attempt}/${maxProxyAttempts}) with session ${session.id} via proxy ${proxyInfo.hostname || proxyInfo.url} ...`);
+        console.log(`Loading search results (attempt ${attempt}/${maxProxyAttempts}) with proxy ${proxyInfo.hostname || proxyInfo.url} ...`);
 
         context = await browser.newContext({
             proxy: { server: proxyInfo.url },
@@ -182,9 +167,8 @@ try {
         page = await context.newPage();
 
         try {
-            await gotoWithFastFail(page, 'https://www.linkedin.com', Math.min(15000, navigationTimeoutMs));
-            await gotoWithFastFail(page, salesNavigatorSearchUrl, navigationTimeoutMs);
-            await page.waitForTimeout(3500);
+            await page.goto(salesNavigatorSearchUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+            await page.waitForTimeout(5000);
 
             if (isBlockedUrl(page.url())) {
                 throw new Error(`Blocked immediately on load at ${page.url()}. ${BLOCK_HINT}`);
@@ -207,7 +191,7 @@ try {
     }
 
     if (!page || !context) {
-        throw new Error(`Could not open a usable LinkedIn session after ${maxProxyAttempts} attempts. Try RESIDENTIAL proxies, a fresh li_at cookie, or a longer actor run timeout.`);
+        throw new Error(`Could not open a usable LinkedIn session after ${maxProxyAttempts} attempts.`);
     }
 
     for (const url of companyUrls) {
