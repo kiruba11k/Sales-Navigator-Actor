@@ -1,0 +1,6 @@
+{
+  "salesNavigatorSearchUrl": "string",
+  "maxResults": 1000,
+  "cookieString": "string",
+  "maxConcurrency": 3
+}
