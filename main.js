@@ -22,7 +22,7 @@ async function getCompanyLinks(page, max) {
     
     // WAIT for the search results to actually appear on screen
     try {
-        await page.waitForSelector('[data-test-search-result], .artdeco-entity-lockup', { timeout: 30000 });
+        await page.waitForSelector('.artdeco-entity-lockup, [data-test-search-result]', { timeout: 30000 });
     } catch (e) {
         console.error("Search results never loaded. LinkedIn might be blocking or cookie is invalid.");
         return [];
