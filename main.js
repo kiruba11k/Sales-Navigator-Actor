@@ -1,6 +1,5 @@
 import { Actor } from 'apify';
 import { chromium } from 'playwright';
-import { SessionPool } from 'crawlee';
 
 await Actor.init();
 
@@ -12,6 +11,7 @@ const {
     maxProxyAttempts = 3,
     proxyGroups,
     proxyCountry,
+    useApifyProxy = true,
 } = input;
 
 if (!salesNavigatorSearchUrl) {
@@ -19,12 +19,11 @@ if (!salesNavigatorSearchUrl) {
 }
 
 const proxyConfiguration = await Actor.createProxyConfiguration({
-    useApifyProxy: true,
+    useApifyProxy: useApifyProxy !== false,
     groups: Array.isArray(proxyGroups) ? proxyGroups : undefined,
     countryCode: typeof proxyCountry === 'string' ? proxyCountry : undefined,
 });
 
-const sessionPool = await SessionPool.open({ maxPoolSize: Math.max(3, maxProxyAttempts) });
 const browser = await chromium.launch({ headless: true });
 
 const BLOCK_HINT = 'LinkedIn is blocking this session/proxy or the cookie is no longer valid.';
@@ -149,13 +148,13 @@ try {
     let context;
 
     for (let attempt = 1; attempt <= maxProxyAttempts; attempt += 1) {
-        const session = await sessionPool.getSession();
-        const proxyInfo = await proxyConfiguration.newProxyInfo(session.id);
+        const proxySessionId = `linkedin_search_${Date.now()}_${attempt}_${Math.random().toString(36).slice(2, 8)}`;
+        const proxyInfo = await proxyConfiguration.newProxyInfo(proxySessionId);
 
-        console.log(`Loading search results (attempt ${attempt}/${maxProxyAttempts}) with proxy ${proxyInfo.hostname || proxyInfo.url} ...`);
+        console.log(`Loading search results (attempt ${attempt}/${maxProxyAttempts}) with proxy ${proxyInfo?.hostname || proxyInfo?.url || 'disabled'} (session ${proxySessionId}) ...`);
 
         context = await browser.newContext({
-            proxy: { server: proxyInfo.url },
+            proxy: proxyInfo?.url ? { server: proxyInfo.url } : undefined,
             viewport: { width: 1280, height: 900 },
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         });
@@ -180,8 +179,12 @@ try {
             }
             break;
         } catch (error) {
-            session.retire();
-            console.error(`Attempt ${attempt} failed: ${error.message}`);
+            const isTimeout = /timeout/i.test(error?.message || '');
+            const timeoutHint = isTimeout
+                ? ' This usually means the proxy cannot reach LinkedIn. Free Apify datacenter proxies are often blocked; try RESIDENTIAL proxies, disable proxy usage, or use a different country.'
+                : '';
+
+            console.error(`Attempt ${attempt} failed: ${error.message}${timeoutHint}`);
             await context.close();
             page = undefined;
             context = undefined;
